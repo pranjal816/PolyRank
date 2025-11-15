@@ -6,12 +6,3 @@ ProblemType problemTypeFromString(const std::string& s) {
     if (s == "SIMPLIFY") return ProblemType::Simplification;
     return ProblemType::Evaluation;
 }
-
-std::string problemTypeToString(ProblemType t) {
-    switch (t) {
-    case ProblemType::Evaluation: return "EVAL";
-    case ProblemType::RootFinding: return "ROOT";
-    case ProblemType::Simplification: return "SIMPLIFY";
-    default: return "EVAL";
-    }
-}
