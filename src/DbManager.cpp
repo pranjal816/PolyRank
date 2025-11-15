@@ -4,16 +4,7 @@
 DbManager::DbManager() : hEnv(SQL_NULL_HENV), hDbc(SQL_NULL_HDBC), connected(false) {}
 DbManager::~DbManager() { disconnect(); }
 
-void DbManager::check(SQLRETURN ret, SQLSMALLINT type, SQLHANDLE handle, const std::string& msg) {
-    if (SQL_SUCCEEDED(ret)) return;
 
-    SQLCHAR state[6], msgText[256];
-    SQLINTEGER native;
-    SQLSMALLINT len;
-
-    SQLGetDiagRec(type, handle, 1, state, &native, msgText, sizeof(msgText), &len);
-    throw std::runtime_error(msg + ": " + (char*)msgText);
-}
 
 void DbManager::connect(const std::string& dsn, const std::string& user, const std::string& pass) {
     SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &hEnv);
