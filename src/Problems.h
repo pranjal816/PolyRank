@@ -1,20 +1,16 @@
 #pragma once
-#include <memory>
 #include <string>
+#include <memory>
 #include <vector>
 #include "Models.h"
 #include "Polynomial.h"
-#include "Exceptions.h"
 
-// Forward declare to avoid circular dependency
-class DbManager;
+class DbManager; // forward declaration
 
 class PolynomialProblem {
 public:
     explicit PolynomialProblem(const Problem& p) : problem_(p) {}
-    virtual ~PolynomialProblem() = default;
-
-    const Problem& getProblem() const { return problem_; }
+    virtual ~PolynomialProblem() {}
 
     virtual std::string getPrompt() const = 0;
     virtual bool checkAnswer(const std::string& userAnswer, double& score) = 0;
@@ -32,8 +28,8 @@ public:
 
 private:
     Polynomial<double> poly_;
-    double x_ = 0.0;
-    double expected_ = 0.0;
+    double x_;
+    double expected_;
 };
 
 class RootFindingProblem : public PolynomialProblem {
@@ -45,7 +41,7 @@ public:
 
 private:
     Polynomial<double> poly_;
-    std::vector<double> roots_;  // auto-solved or cached
+    std::vector<double> roots_;
 };
 
 class SimplificationProblem : public PolynomialProblem {
@@ -56,7 +52,7 @@ public:
     bool checkAnswer(const std::string& userAnswer, double& score) override;
 
 private:
-    std::string expectedCanonical_;
+    std::string expected_;
 };
 
 std::unique_ptr<PolynomialProblem> createProblemInstance(const Problem& p, DbManager& db);

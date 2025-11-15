@@ -1,316 +1,169 @@
 #include "DbManager.h"
 #include <iostream>
 
-DbManager::DbManager()
-    : hEnv_(SQL_NULL_HENV),
-      hDbc_(SQL_NULL_HDBC),
-      connected_(false) {}
+DbManager::DbManager() : hEnv(SQL_NULL_HENV), hDbc(SQL_NULL_HDBC), connected(false) {}
+DbManager::~DbManager() { disconnect(); }
 
-DbManager::~DbManager() {
-    disconnect();
-}
-
-void DbManager::checkRet(SQLRETURN ret, SQLSMALLINT handleType, SQLHANDLE handle,
-                         const std::string& msg) {
+void DbManager::check(SQLRETURN ret, SQLSMALLINT type, SQLHANDLE handle, const std::string& msg) {
     if (SQL_SUCCEEDED(ret)) return;
 
-    SQLCHAR sqlState[6], message[256];
-    SQLINTEGER nativeError;
-    SQLSMALLINT textLength;
-    SQLGetDiagRec(handleType, handle, 1, sqlState, &nativeError,
-                  message, sizeof(message), &textLength);
-    throw DbException(msg + " | " + reinterpret_cast<char*>(message));
+    SQLCHAR state[6], msgText[256];
+    SQLINTEGER native;
+    SQLSMALLINT len;
+
+    SQLGetDiagRec(type, handle, 1, state, &native, msgText, sizeof(msgText), &len);
+    throw std::runtime_error(msg + ": " + (char*)msgText);
 }
 
-void DbManager::connect(const std::string& dsn,
-                        const std::string& user,
-                        const std::string& password) {
-    if (connected_) return;
+void DbManager::connect(const std::string& dsn, const std::string& user, const std::string& pass) {
+    SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &hEnv);
+    SQLSetEnvAttr(hEnv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0);
 
-    SQLRETURN ret;
-    ret = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &hEnv_);
-    checkRet(ret, SQL_HANDLE_ENV, hEnv_, "Alloc ENV failed");
+    SQLAllocHandle(SQL_HANDLE_DBC, hEnv, &hDbc);
 
-    ret = SQLSetEnvAttr(hEnv_, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
-    checkRet(ret, SQL_HANDLE_ENV, hEnv_, "Set ODBC version failed");
+    std::string conn = "DSN=" + dsn + ";UID=" + user + ";PWD=" + pass + ";";
+    SQLCHAR out[1024];
+    SQLSMALLINT outLen;
 
-    ret = SQLAllocHandle(SQL_HANDLE_DBC, hEnv_, &hDbc_);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc DBC failed");
+    SQLRETURN ret = SQLDriverConnect(hDbc, nullptr, (SQLCHAR*)conn.c_str(), SQL_NTS,
+                                     out, sizeof(out), &outLen, SQL_DRIVER_NOPROMPT);
 
-    std::string connStr = "DSN=" + dsn + ";UID=" + user + ";PWD=" + password + ";";
-    SQLCHAR outConnStr[1024];
-    SQLSMALLINT outConnStrLen;
-
-    ret = SQLDriverConnect(hDbc_, nullptr,
-                           (SQLCHAR*)connStr.c_str(), SQL_NTS,
-                           outConnStr, sizeof(outConnStr),
-                           &outConnStrLen,
-                           SQL_DRIVER_NOPROMPT);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Connection failed");
-    connected_ = true;
+    check(ret, SQL_HANDLE_DBC, hDbc, "DB Connect failed");
+    connected = true;
 }
 
 void DbManager::disconnect() {
-    if (connected_) {
-        SQLDisconnect(hDbc_);
-        SQLFreeHandle(SQL_HANDLE_DBC, hDbc_);
-        SQLFreeHandle(SQL_HANDLE_ENV, hEnv_);
-        hDbc_ = SQL_NULL_HDBC;
-        hEnv_ = SQL_NULL_HENV;
-        connected_ = false;
+    if (connected) {
+        SQLDisconnect(hDbc);
+        SQLFreeHandle(SQL_HANDLE_DBC, hDbc);
+        SQLFreeHandle(SQL_HANDLE_ENV, hEnv);
     }
 }
 
 User DbManager::getUserByUsername(const std::string& username) {
-    SQLHSTMT hStmt;
-    SQLRETURN ret = SQLAllocHandle(SQL_HANDLE_STMT, hDbc_, &hStmt);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc STMT failed");
+    SQLHSTMT stmt;
+    SQLAllocHandle(SQL_HANDLE_STMT, hDbc, &stmt);
 
-    std::string query = "SELECT user_id, username, password FROM Users WHERE username = ?";
-    ret = SQLPrepare(hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Prepare failed");
-
-    ret = SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
-                           0, 0, (SQLPOINTER)username.c_str(), username.size(), nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind param failed");
-
-    ret = SQLExecute(hStmt);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Execute failed");
+    std::string q = "SELECT user_id, username, password FROM Users WHERE username='" + username + "'";
+    SQLRETURN ret = SQLExecDirect(stmt, (SQLCHAR*)q.c_str(), SQL_NTS);
+    check(ret, SQL_HANDLE_STMT, stmt, "User lookup failed");
 
     User u;
-    SQLINTEGER id;
-    char uname[64], pwd[64];
-    SQLLEN cbId, cbU, cbP;
-
-    ret = SQLFetch(hStmt);
-    if (ret == SQL_NO_DATA) {
-        SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
-        throw DbException("User not found");
+    if (SQLFetch(stmt) == SQL_NO_DATA) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        throw std::runtime_error("User not found");
     }
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Fetch failed");
 
-    SQLGetData(hStmt, 1, SQL_C_SLONG, &id, 0, &cbId);
-    SQLGetData(hStmt, 2, SQL_C_CHAR, uname, sizeof(uname), &cbU);
-    SQLGetData(hStmt, 3, SQL_C_CHAR, pwd, sizeof(pwd), &cbP);
+    SQLGetData(stmt, 1, SQL_C_SLONG, &u.id, 0, nullptr);
 
-    u.id = id;
+    char uname[50], pass[50];
+    SQLGetData(stmt, 2, SQL_C_CHAR, uname, sizeof(uname), nullptr);
+    SQLGetData(stmt, 3, SQL_C_CHAR, pass, sizeof(pass), nullptr);
+
     u.username = uname;
-    u.password = pwd;
+    u.password = pass;
 
-    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     return u;
 }
 
-User DbManager::createUser(const std::string& username, const std::string& password) {
-    SQLHSTMT hStmt;
-    SQLRETURN ret = SQLAllocHandle(SQL_HANDLE_STMT, hDbc_, &hStmt);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc STMT failed");
+User DbManager::createUser(const std::string& u, const std::string& p) {
+    SQLHSTMT stmt;
+    SQLAllocHandle(SQL_HANDLE_STMT, hDbc, &stmt);
 
-    std::string query = "INSERT INTO Users (username, password) VALUES (?, ?)";
-    ret = SQLPrepare(hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Prepare failed");
+    std::string q = "INSERT INTO Users (username, password) VALUES ('" + u + "','" + p + "')";
+    SQLRETURN ret = SQLExecDirect(stmt, (SQLCHAR*)q.c_str(), SQL_NTS);
+    check(ret, SQL_HANDLE_STMT, stmt, "User insert failed");
 
-    ret = SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
-                           0, 0, (SQLPOINTER)username.c_str(), username.size(), nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind username failed");
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
 
-    ret = SQLBindParameter(hStmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
-                           0, 0, (SQLPOINTER)password.c_str(), password.size(), nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind password failed");
-
-    ret = SQLExecute(hStmt);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Execute failed");
-
-    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
-
-    return getUserByUsername(username);
+    return getUserByUsername(u);
 }
 
 std::vector<Problem> DbManager::getProblems() {
-    std::vector<Problem> problems;
+    std::vector<Problem> v;
+    SQLHSTMT stmt;
+    SQLAllocHandle(SQL_HANDLE_STMT, hDbc, &stmt);
 
-    SQLHSTMT hStmt;
-    SQLRETURN ret = SQLAllocHandle(SQL_HANDLE_STMT, hDbc_, &hStmt);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc STMT failed");
+    SQLRETURN ret = SQLExecDirect(stmt, (SQLCHAR*)"SELECT problem_id,title,description,difficulty,type,poly_coeffs FROM Problems", SQL_NTS);
+    check(ret, SQL_HANDLE_STMT, stmt, "Problem fetch failed");
 
-    std::string query =
-        "SELECT problem_id, title, description, difficulty, type, poly_coeffs "
-        "FROM Problems";
-    ret = SQLExecDirect(hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "ExecDirect failed");
-
-    while (SQLFetch(hStmt) != SQL_NO_DATA) {
+    while (SQLFetch(stmt) != SQL_NO_DATA) {
         Problem p;
-        SQLINTEGER id;
-        char title[128], desc[256], diff[32], type[32], coeffs[256];
-        SQLLEN cb;
+        SQLGetData(stmt, 1, SQL_C_SLONG, &p.id, 0, nullptr);
 
-        SQLGetData(hStmt, 1, SQL_C_SLONG, &id, 0, &cb);
-        SQLGetData(hStmt, 2, SQL_C_CHAR, title, sizeof(title), &cb);
-        SQLGetData(hStmt, 3, SQL_C_CHAR, desc, sizeof(desc), &cb);
-        SQLGetData(hStmt, 4, SQL_C_CHAR, diff, sizeof(diff), &cb);
-        SQLGetData(hStmt, 5, SQL_C_CHAR, type, sizeof(type), &cb);
-        SQLGetData(hStmt, 6, SQL_C_CHAR, coeffs, sizeof(coeffs), &cb);
+        char t[100], d[255], dif[20], tp[20], coeffs[200];
+        SQLGetData(stmt, 2, SQL_C_CHAR, t, sizeof(t), nullptr);
+        SQLGetData(stmt, 3, SQL_C_CHAR, d, sizeof(d), nullptr);
+        SQLGetData(stmt, 4, SQL_C_CHAR, dif, sizeof(dif), nullptr);
+        SQLGetData(stmt, 5, SQL_C_CHAR, tp, sizeof(tp), nullptr);
+        SQLGetData(stmt, 6, SQL_C_CHAR, coeffs, sizeof(coeffs), nullptr);
 
-        p.id = id;
-        p.title = title;
-        p.description = desc;
-        p.difficulty = diff;
-        p.type = problemTypeFromString(type);
+        p.title = t;
+        p.description = d;
+        p.difficulty = dif;
+        p.type = problemTypeFromString(tp);
         p.polyCoeffs = coeffs;
 
-        problems.push_back(p);
+        v.push_back(p);
     }
 
-    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
-    return problems;
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return v;
 }
 
 void DbManager::insertSubmission(const Submission& s) {
-    SQLHSTMT hStmt;
-    SQLRETURN ret = SQLAllocHandle(SQL_HANDLE_STMT, hDbc_, &hStmt);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc STMT failed");
+    SQLHSTMT stmt;
+    SQLAllocHandle(SQL_HANDLE_STMT, hDbc, &stmt);
 
-    std::string query =
-        "INSERT INTO Submissions (user_id, problem_id, user_answer, is_correct, score) "
-        "VALUES (?, ?, ?, ?, ?)";
+    std::string q = "INSERT INTO Submissions (user_id,problem_id,user_answer,is_correct,score) VALUES (" +
+        std::to_string(s.userId) + "," +
+        std::to_string(s.problemId) + ",'" +
+        s.userAnswer + "'," +
+        (s.isCorrect ? "1" : "0") + "," +
+        std::to_string(s.score) + ")";
 
-    ret = SQLPrepare(hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Prepare failed");
+    SQLRETURN ret = SQLExecDirect(stmt, (SQLCHAR*)q.c_str(), SQL_NTS);
+    check(ret, SQL_HANDLE_STMT, stmt, "Insert submission failed");
 
-    SQLINTEGER userId = s.userId;
-    SQLINTEGER problemId = s.problemId;
-    SQLINTEGER isCorrect = s.isCorrect ? 1 : 0;
-    double score = s.score;
-
-    ret = SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                           0, 0, &userId, 0, nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind user_id failed");
-
-    ret = SQLBindParameter(hStmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                           0, 0, &problemId, 0, nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind problem_id failed");
-
-    ret = SQLBindParameter(hStmt, 3, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
-                           0, 0, (SQLPOINTER)s.userAnswer.c_str(),
-                           s.userAnswer.size(), nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind answer failed");
-
-    ret = SQLBindParameter(hStmt, 4, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                           0, 0, &isCorrect, 0, nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind is_correct failed");
-
-    ret = SQLBindParameter(hStmt, 5, SQL_PARAM_INPUT, SQL_C_DOUBLE, SQL_DOUBLE,
-                           0, 0, &score, 0, nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind score failed");
-
-    ret = SQLExecute(hStmt);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Execute failed");
-
-    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
 }
-
-std::vector<std::pair<std::string,double>> DbManager::getLeaderboard() {
-    std::vector<std::pair<std::string,double>> lb;
-
-    SQLHSTMT hStmt;
-    SQLRETURN ret = SQLAllocHandle(SQL_HANDLE_STMT, hDbc_, &hStmt);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc STMT failed");
-
-    std::string query =
-        "SELECT u.username, SUM(s.score) AS total_score "
-        "FROM Users u "
-        "JOIN Submissions s ON u.user_id = s.user_id "
-        "GROUP BY u.username "
-        "ORDER BY total_score DESC";
-
-    ret = SQLExecDirect(hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "ExecDirect failed");
-
-    while (SQLFetch(hStmt) != SQL_NO_DATA) {
-        char uname[64];
-        double totalScore;
-        SQLLEN cb;
-
-        SQLGetData(hStmt, 1, SQL_C_CHAR, uname, sizeof(uname), &cb);
-        SQLGetData(hStmt, 2, SQL_C_DOUBLE, &totalScore, 0, &cb);
-
-        lb.emplace_back(uname, totalScore);
-    }
-
-    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
-    return lb;
-}
-
-// --------- Root caching methods ----------
 
 std::vector<double> DbManager::getCachedRoots(int problemId) {
     std::vector<double> roots;
-    SQLHSTMT hStmt;
-    SQLRETURN ret = SQLAllocHandle(SQL_HANDLE_STMT, hDbc_, &hStmt);
-    checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc STMT failed");
+    SQLHSTMT stmt;
+    SQLAllocHandle(SQL_HANDLE_STMT, hDbc, &stmt);
 
-    std::string query =
-        "SELECT root_value FROM PolynomialSolutions "
-        "WHERE problem_id = ? ORDER BY root_index ASC";
+    std::string q = "SELECT root_value FROM PolynomialSolutions WHERE problem_id=" + std::to_string(problemId);
 
-    ret = SQLPrepare(hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Prepare failed");
+    SQLRETURN ret = SQLExecDirect(stmt, (SQLCHAR*)q.c_str(), SQL_NTS);
+    check(ret, SQL_HANDLE_STMT, stmt, "Root fetch failed");
 
-    ret = SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                           0, 0, &problemId, 0, nullptr);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind param failed");
-
-    ret = SQLExecute(hStmt);
-    checkRet(ret, SQL_HANDLE_STMT, hStmt, "Execute failed");
-
-    double rootVal;
-    SQLLEN cb;
-    while (SQLFetch(hStmt) != SQL_NO_DATA) {
-        SQLGetData(hStmt, 1, SQL_C_DOUBLE, &rootVal, 0, &cb);
-        roots.push_back(rootVal);
+    double v;
+    while (SQLFetch(stmt) != SQL_NO_DATA) {
+        SQLGetData(stmt, 1, SQL_C_DOUBLE, &v, 0, nullptr);
+        roots.push_back(v);
     }
 
-    SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     return roots;
 }
 
 void DbManager::cacheRoots(int problemId, const std::vector<double>& roots) {
-    for (int i = 0; i < static_cast<int>(roots.size()); ++i) {
-        SQLHSTMT hStmt;
-        SQLRETURN ret = SQLAllocHandle(SQL_HANDLE_STMT, hDbc_, &hStmt);
-        checkRet(ret, SQL_HANDLE_DBC, hDbc_, "Alloc STMT failed");
+    for (int i = 0; i < roots.size(); ++i) {
+        SQLHSTMT stmt;
+        SQLAllocHandle(SQL_HANDLE_STMT, hDbc, &stmt);
 
-        std::string query =
-            "INSERT INTO PolynomialSolutions (poly_id, problem_id, root_index, root_value) "
-            "VALUES (?, ?, ?, ?)";
+        std::string q = "INSERT INTO PolynomialSolutions (poly_id,problem_id,root_index,root_value)"
+                        " VALUES (" +
+                        std::to_string(problemId) + "," +
+                        std::to_string(problemId) + "," +
+                        std::to_string(i) + "," +
+                        std::to_string(roots[i]) + ")";
 
-        ret = SQLPrepare(hStmt, (SQLCHAR*)query.c_str(), SQL_NTS);
-        checkRet(ret, SQL_HANDLE_STMT, hStmt, "Prepare failed");
+        SQLRETURN ret = SQLExecDirect(stmt, (SQLCHAR*)q.c_str(), SQL_NTS);
+        check(ret, SQL_HANDLE_STMT, stmt, "Cache root failed");
 
-        int polyId = problemId;
-        int idx = i + 1;
-        double val = roots[i];
-
-        ret = SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                               0, 0, &polyId, 0, nullptr);
-        checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind poly_id failed");
-
-        ret = SQLBindParameter(hStmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                               0, 0, &problemId, 0, nullptr);
-        checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind problem_id failed");
-
-        ret = SQLBindParameter(hStmt, 3, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                               0, 0, &idx, 0, nullptr);
-        checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind root_index failed");
-
-        ret = SQLBindParameter(hStmt, 4, SQL_PARAM_INPUT, SQL_C_DOUBLE, SQL_DOUBLE,
-                               0, 0, &val, 0, nullptr);
-        checkRet(ret, SQL_HANDLE_STMT, hStmt, "Bind root_value failed");
-
-        ret = SQLExecute(hStmt);
-        checkRet(ret, SQL_HANDLE_STMT, hStmt, "Execute failed");
-
-        SQLFreeHandle(SQL_HANDLE_STMT, hStmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     }
 }
