@@ -1,32 +1,37 @@
 #include <iostream>
 #include <memory>
 #include "DbManager.h"
-#include "Problems.h"
+#include "TerminalUI.h"
 
 int main() {
+    std::cout << "Starting PolyRank Terminal System..." << std::endl;
+    
     DbManager db;
-
+    
     try {
-        db.connect("PolyRankDSN", "root", "P@2005Sharma");
-    } catch (std::exception& e) {
-        std::cerr << e.what();
+        // Connect to database using direct connection (no DSN)
+        std::cout << "Attempting to connect to database..." << std::endl;
+        db.connect("", "root", "P@2005Sharma");
+        std::cout << "Database connected successfully." << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Database connection failed: " << e.what() << std::endl;
+        std::cerr << "\nTroubleshooting steps:" << std::endl;
+        std::cerr << "1. Make sure MySQL is running" << std::endl;
+        std::cerr << "2. Download and install MySQL ODBC Driver from:" << std::endl;
+        std::cerr << "   https://dev.mysql.com/downloads/connector/odbc/" << std::endl;
+        std::cerr << "3. Verify your MySQL credentials" << std::endl;
+        std::cerr << "4. Make sure PolyRank database exists" << std::endl;
         return 1;
     }
-
-    std::string username, pass;
-    std::cout << "Enter username: ";
-    std::getline(std::cin, username);
-    std::cout << "Enter password: ";
-    std::getline(std::cin, pass);
-
-    User u;
+    
     try {
-        u = db.getUserByUsername(username);
-        if (u.password != pass) {
-            std::cout << "Invalid password.\n";
-            return 0;
-        }
-    } catch (...) {
-        std::cout << "User not found. Creating...\n";
-        u = db.createUser(username, pass);
+        TerminalUI ui(db);
+        ui.run();
+    } catch (const std::exception& e) {
+        std::cerr << "Application error: " << e.what() << std::endl;
+        return 1;
     }
+    
+    std::cout << "PolyRank system shutdown." << std::endl;
+    return 0;
+}
