@@ -525,6 +525,11 @@ int TerminalUI::getIntInput(const std::string& prompt) {
     return value;
 }
 
+void TerminalUI::waitForEnter() {
+    std::cout << "\nPress Enter to continue...";
+    std::cin.ignore();
+}
+
 double TerminalUI::getDoubleInput(const std::string& prompt) {
     std::cout << prompt;
     double value;

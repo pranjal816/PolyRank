@@ -43,6 +43,6 @@ private:
     std::string getInput(const std::string& prompt);
     int getIntInput(const std::string& prompt);
     double getDoubleInput(const std::string& prompt);
-    
     void waitForEnter();
+    
 };
